@@ -13,8 +13,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import static org.hamcrest.Matchers.is;
-
 /**
  * Reproduces the problem, see single @Test method.
  */
@@ -31,7 +29,7 @@ public class ThreadsProblemReproducer extends CamelTestSupport {
     @Before
     public void setUp() throws Exception {
         super.setUp();
-        exec = Executors.newFixedThreadPool(20);
+        exec = Executors.newFixedThreadPool(100);
     }
 
     /**
@@ -44,11 +42,13 @@ public class ThreadsProblemReproducer extends CamelTestSupport {
      * Expectation:
      * The routes thread pool size increases until it reaches its max of 10 and the queue is full after the first
      * ~30 tasks. After that, sending new messages to the route should be rejected with a org.apache.camel.CamelExchangeException caused
-     * by a java.util.concurrent.RejectedExecutionException.
+     * by a java.util.concurrent.RejectedExecutionException. In both cases (the routes thread pool can / cannot handle more tasks) the
+     * route should not block the calling thread.
      * <p/>
      * Observation:
-     * It seems like threads that submit exchanges to the route block until the routes thread pool can handle new tasks. No exceptions
-     * are thrown from the template.
+     * In the beginning the route accepts / rejects tasks as expected. An invocation of the route takes about 20-40ms.
+     * At some points invocations of the route take considerably longer (around 6s). It seems like threads that
+     * submit exchanges to the route block until the routes thread pool can handle new tasks.
      * <p/>
      * Component
      * org.apache.camel.model.ProcessorDefinition#threads() methods.
@@ -58,17 +58,12 @@ public class ThreadsProblemReproducer extends CamelTestSupport {
      */
     @Test
     public void reproduceProblem() throws Exception {
-        int tasksCount = 1000;
-        final Stopwatch started = Stopwatch.createStarted();
+        int tasksCount = 10000;
         for (int i = 0; i < tasksCount; i++) {
             exec.submit(new InvokeRouteTask(i));
         }
-        LOGGER.info(String.format("Sending all tasks to the route took %d millis", started.elapsed(TimeUnit.MILLISECONDS)));
 
-        exec.shutdown();
-        // Processing all tasks should not take longer than a few ms since the route is supposed
-        // to work asynchronously. However, the following line results in an AssertionError
-        assertThat(exec.awaitTermination(100, TimeUnit.MILLISECONDS), is(true));
+        Thread.sleep(20 * 1000L);
     }
 
     @Override
@@ -102,12 +97,10 @@ public class ThreadsProblemReproducer extends CamelTestSupport {
             try {
                 template.sendBody("Task #" + idx);
             } catch (CamelExecutionException e) {
-                // This does never get logged
-                LOGGER.error(String.format("Task #%d: Caught %s: %s", idx, e.getClass().getName(), e.getMessage()), e);
+                LOGGER.error(String.format("Task #%d: Caught %s: %s", idx, e.getClass().getName(), e.getMessage()));
             }
             stopwatch.stop();
-            // The execution takes longer and longer. It seems like the thread is blocking until the
-            // routes thread pool is ready for new tasks.
+            // At some point the execution takes longer and longer.
             LOGGER.info(String.format("Task #%d took %d millis to invoke the route", idx,
                     stopwatch.elapsed(TimeUnit.MILLISECONDS)));
         }
